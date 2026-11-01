@@ -1,10 +1,12 @@
 'use strict';
 
-const CACHE = 'boring-vault-v2';
+const CACHE = 'boring-vault-v3';
 const FILES = ['./', 'index.html', 'app.js', 'worker.js', 'style.css', 'manifest.webmanifest', 'icon-180.png', 'icon-512.png'];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(FILES)).then(() => self.skipWaiting()));
+  // 'reload' skips the HTTP cache, which could otherwise pin the previous version's files.
+  const requests = FILES.map((file) => new Request(file, { cache: 'reload' }));
+  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(requests)).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {
