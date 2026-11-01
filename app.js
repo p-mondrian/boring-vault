@@ -3,17 +3,18 @@
 const STORAGE_KEY = 'boring-vault-record';
 const LEAVE_GRACE_MS = 30 * 1000;
 const REVEAL_MS = 120 * 1000;
+const DEFAULT_SUM_COUNT = 30; // Also applies to vaults sealed before sums existed.
 const PASSWORD_LENGTH = 24;
 const PASSWORD_ALPHABET = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789-_!?';
 
 const $ = (id) => document.getElementById(id);
-const SCREENS = ['setup', 'sealing', 'sealed', 'waiting', 'typing', 'reveal'];
+const SCREENS = ['setup', 'sealing', 'sealed', 'waiting', 'typing', 'sums', 'reveal'];
 
 let activeWorker = null;
 let wakeLock = null;
 let hiddenAt = null;
 let revealTimer = null;
-let session = null; // { lines, answer, index } while an unlock is in progress.
+let session = null; // { lines, sums, answer, index, sumIndex } while an unlock is in progress.
 
 function show(name) {
   for (const screen of SCREENS) $(screen).hidden = screen !== name;
@@ -22,7 +23,7 @@ function show(name) {
 
 function loadRecord() {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY));
+    return { sumCount: DEFAULT_SUM_COUNT, ...JSON.parse(localStorage.getItem(STORAGE_KEY)) };
   } catch {
     return null;
   }
@@ -37,7 +38,8 @@ function isValidRecord(record) {
   return Boolean(record) && record.version === 1 &&
     [record.n, record.base, record.salt, record.iv, record.ciphertext].every((v) => typeof v === 'string' && /^[0-9a-f]+$/.test(v)) &&
     Number.isSafeInteger(record.squarings) && record.squarings > 0 &&
-    Number.isInteger(record.lineCount) && record.lineCount > 0 && record.lineCount <= 500;
+    Number.isInteger(record.lineCount) && record.lineCount > 0 && record.lineCount <= 500 &&
+    (record.sumCount === undefined || (Number.isInteger(record.sumCount) && record.sumCount >= 0 && record.sumCount <= 500));
 }
 
 function runJob(message, onUpdate) {
@@ -102,15 +104,51 @@ function formatDuration(ms) {
   return minutes <= 1 ? 'about a minute' : `about ${minutes} minutes`;
 }
 
-async function copyText(text, button) {
-  const original = button.textContent;
+// Runs inside the tap itself, which is when iOS allows a copy.
+function copyWithSelection(text) {
+  const buffer = document.createElement('textarea');
+  buffer.className = 'copy-buffer';
+  buffer.value = text;
+  buffer.readOnly = true;
+  document.body.append(buffer);
+  try {
+    buffer.focus();
+    buffer.setSelectionRange(0, text.length);
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    buffer.remove();
+  }
+}
+
+async function writeToClipboard(text) {
+  if (copyWithSelection(text)) return true;
   try {
     await navigator.clipboard.writeText(text);
-    button.textContent = 'Copied';
+    return true;
   } catch {
-    button.textContent = 'Copy failed';
+    return false;
   }
-  setTimeout(() => { button.textContent = original; }, 1500);
+}
+
+async function copyText(text, button, failureLabel = 'Copy failed') {
+  const original = button.textContent;
+  const copied = await writeToClipboard(text);
+  button.textContent = copied ? 'Copied' : failureLabel;
+  setTimeout(() => { button.textContent = original; }, copied ? 1500 : 4000);
+  return copied;
+}
+
+async function copyBackup(event) {
+  const backup = localStorage.getItem(STORAGE_KEY);
+  const copied = await copyText(backup, event.target);
+  $('backup-manual').hidden = copied;
+  if (!copied) {
+    $('backup-output').value = backup;
+    $('backup-output').focus();
+    $('backup-output').select();
+  }
 }
 
 // Setup
@@ -131,9 +169,10 @@ async function sealVault(event) {
   };
   const minutes = Number($('minutes').value);
   const lineCount = Number($('line-count').value);
+  const sumCount = Number($('sum-count').value);
   show('sealing');
   try {
-    const record = await runJob({ job: 'seal', secret, minutes, lineCount }, (update) => {
+    const record = await runJob({ job: 'seal', secret, minutes, lineCount, sumCount }, (update) => {
       if (update.type === 'status') $('sealing-status').textContent = update.text;
     });
     saveRecord(record);
@@ -172,6 +211,9 @@ function showSealed(message) {
   $('sealed-message').hidden = !message;
   $('sealed-minutes').textContent = String(record.minutes);
   $('sealed-lines').textContent = String(record.lineCount);
+  $('sealed-sums').textContent = String(record.sumCount);
+  $('backup-manual').hidden = true;
+  $('backup-output').value = '';
   $('sealed-date').textContent = new Date(record.createdAt).toLocaleDateString();
   $('delete-panel').hidden = true;
   $('delete-confirm').value = '';
@@ -188,7 +230,7 @@ function deleteVault() {
 
 async function startUnlock() {
   const record = loadRecord();
-  session = { index: 0, lines: null, answer: null };
+  session = { index: 0, sumIndex: 0, lines: null, sums: null, answer: null };
   hiddenAt = null;
   $('wait-bar').style.width = '0%';
   $('wait-percent').textContent = '0%';
@@ -197,7 +239,7 @@ async function startUnlock() {
   keepScreenOn();
   const startedAt = Date.now();
   try {
-    const { answer, lines } = await runJob({ job: 'solve', record }, ({ type, done, total }) => {
+    const { answer, lines, sums } = await runJob({ job: 'solve', record }, ({ type, done, total }) => {
       if (type !== 'progress') return;
       const fraction = done / total;
       $('wait-bar').style.width = `${(fraction * 100).toFixed(1)}%`;
@@ -209,6 +251,7 @@ async function startUnlock() {
     if (!session) return;
     session.answer = answer;
     session.lines = lines;
+    session.sums = sums;
     showTyping();
   } catch (error) {
     showSealed(`Unlock failed: ${error.message}`);
@@ -232,12 +275,39 @@ function checkLine() {
   if (input.value === target) {
     session.index += 1;
     if (session.index < session.lines.length) showTyping();
+    else if (session.sums.length > 0) showSum();
     else revealPasswords();
   } else if (!target.startsWith(input.value)) {
     input.value = '';
     $('line-note').textContent = 'Typo. Start this line again.';
   } else {
     $('line-note').textContent = '';
+  }
+}
+
+function showSum() {
+  const { sumIndex, sums } = session;
+  $('sum-counter').textContent = `Sum ${sumIndex + 1} of ${sums.length}`;
+  $('sum-bar').style.width = `${(sumIndex / sums.length) * 100}%`;
+  $('sum-target').textContent = sums[sumIndex].join(' + ');
+  $('sum-input').value = '';
+  $('sum-note').textContent = '';
+  show('sums');
+  $('sum-input').focus();
+}
+
+function checkSum() {
+  const input = $('sum-input');
+  const expected = String(session.sums[session.sumIndex].reduce((total, term) => total + term, 0));
+  if (input.value.length < expected.length) {
+    $('sum-note').textContent = '';
+  } else if (input.value === expected) {
+    session.sumIndex += 1;
+    if (session.sumIndex < session.sums.length) showSum();
+    else revealPasswords();
+  } else {
+    input.value = '';
+    $('sum-note').textContent = 'Wrong. Try this sum again.';
   }
 }
 
@@ -269,7 +339,7 @@ function renderReveal(secret) {
     button.type = 'button';
     button.className = 'secondary';
     button.textContent = 'Copy';
-    button.addEventListener('click', () => copyText(password, button));
+    button.addEventListener('click', () => copyText(password, button, 'Press and hold the password to copy'));
     item.append(name, value, button);
     list.append(item);
   }
@@ -312,19 +382,22 @@ document.addEventListener('visibilitychange', () => {
 // Blocks the shortcuts around retyping.
 for (const type of ['paste', 'drop', 'copy', 'cut', 'contextmenu']) {
   $('line-input').addEventListener(type, (event) => event.preventDefault());
+  $('sum-input').addEventListener(type, (event) => event.preventDefault());
 }
 $('line-input').addEventListener('input', checkLine);
+$('sum-input').addEventListener('input', checkSum);
 
 $('setup-form').addEventListener('submit', sealVault);
 $('import-button').addEventListener('click', importBackup);
 $('generate-1').addEventListener('click', () => { $('password-1').value = generatePassword(); });
 $('generate-2').addEventListener('click', () => { $('password-2').value = generatePassword(); });
 $('start-unlock').addEventListener('click', startUnlock);
-$('copy-backup').addEventListener('click', (event) => copyText(localStorage.getItem(STORAGE_KEY), event.target));
+$('copy-backup').addEventListener('click', copyBackup);
 $('show-delete').addEventListener('click', () => { $('delete-panel').hidden = false; });
 $('delete-button').addEventListener('click', deleteVault);
 $('cancel-wait').addEventListener('click', () => showSealed());
 $('cancel-typing').addEventListener('click', () => showSealed());
+$('cancel-sums').addEventListener('click', () => showSealed());
 $('lock-now').addEventListener('click', lockAfterReveal);
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

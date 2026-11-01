@@ -58,6 +58,8 @@
             <input id="line-count" type="number" inputmode="numeric" min="1" max="500" step="1" value="100" required>
           </div>
         </div>
+        <label for="sum-count">Sums to solve in your head</label>
+        <input id="sum-count" type="number" inputmode="numeric" min="0" max="500" step="1" value="30" required>
       </fieldset>
 
       <p class="hint">Before sealing, set each account to the password above and make sure it works. Nothing here can recover a lost vault.</p>
@@ -85,6 +87,7 @@
     <dl>
       <div><dt>Forced wait</dt><dd><span id="sealed-minutes"></span> min</dd></div>
       <div><dt>Lines to retype</dt><dd id="sealed-lines"></dd></div>
+      <div><dt>Sums to solve</dt><dd id="sealed-sums"></dd></div>
       <div><dt>Sealed on</dt><dd id="sealed-date"></dd></div>
     </dl>
     <button id="start-unlock" type="button">Start unlocking</button>
@@ -94,6 +97,10 @@
       <button id="show-delete" type="button" class="secondary">Delete vault…</button>
     </div>
     <p class="hint">The backup is encrypted. Paste it into Notes or Files, and it still needs the full process to open.</p>
+    <div id="backup-manual" hidden>
+      <label for="backup-output">Automatic copy didn’t work. Select all of this and copy it by hand.</label>
+      <textarea id="backup-output" rows="6" readonly autocapitalize="none" autocorrect="off" spellcheck="false"></textarea>
+    </div>
     <div id="delete-panel" hidden>
       <label for="delete-confirm">This destroys the vault. Type DELETE to confirm.</label>
       <div class="row">
@@ -120,6 +127,16 @@
     <input id="line-input" type="text" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" enterkeyhint="next">
     <p id="line-note" class="error" role="alert"></p>
     <button id="cancel-typing" type="button" class="secondary">Give up</button>
+  </section>
+
+  <section id="sums" hidden>
+    <h1 id="sum-counter">Sum 1</h1>
+    <div class="progress"><div id="sum-bar"></div></div>
+    <p id="sum-target" class="target"></p>
+    <label for="sum-input">Type the total</label>
+    <input id="sum-input" type="text" inputmode="numeric" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" enterkeyhint="next">
+    <p id="sum-note" class="error" role="alert"></p>
+    <button id="cancel-sums" type="button" class="secondary">Give up</button>
   </section>
 
   <section id="reveal" hidden>

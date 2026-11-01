@@ -8,6 +8,7 @@ const FORMAT_VERSION = 1;
 const PRIME_BITS = 1024;
 const CALIBRATION_MS = 3000;
 const WORDS_PER_LINE = 6;
+const TERMS_PER_SUM = 3;
 
 const WORDS = ('acorn anchor apron attic autumn badge bakery ballot bamboo banjo barley barrel basket beacon beaver bench ' +
   'bicycle biscuit blanket bobbin bottle bracket breeze bridge bucket budget bundle butter button cabin cable candle ' +
@@ -141,7 +142,27 @@ async function deriveLines(answer, salt, lineCount) {
   return lines;
 }
 
-async function seal({ secret, minutes, lineCount }) {
+// Same idea as the lines: each sum is three two-digit numbers, hidden until the wait is over.
+async function deriveSums(answer, salt, sumCount) {
+  if (sumCount === 0) return [];
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'HKDF', hash: 'SHA-256', salt, info: encoder.encode('boring-vault sums v1') },
+    await hkdfBaseKey(answer),
+    sumCount * TERMS_PER_SUM * 16,
+  );
+  const view = new DataView(bits);
+  const sums = [];
+  for (let sum = 0; sum < sumCount; sum++) {
+    const terms = [];
+    for (let term = 0; term < TERMS_PER_SUM; term++) {
+      terms.push(10 + view.getUint16((sum * TERMS_PER_SUM + term) * 2) % 90);
+    }
+    sums.push(terms);
+  }
+  return sums;
+}
+
+async function seal({ secret, minutes, lineCount, sumCount }) {
   postMessage({ type: 'status', text: 'Generating the puzzle…' });
   const p = randomPrime();
   let q = randomPrime();
@@ -172,6 +193,7 @@ async function seal({ secret, minutes, lineCount }) {
     squarings,
     minutes,
     lineCount,
+    sumCount,
     salt: bytesToHex(salt),
     iv: bytesToHex(iv),
     ciphertext: bytesToHex(new Uint8Array(ciphertext)),
@@ -193,8 +215,10 @@ async function solve({ record }) {
       }
     }
   }
-  const lines = await deriveLines(value, hexToBytes(record.salt), record.lineCount);
-  return { answer: value.toString(16), lines };
+  const salt = hexToBytes(record.salt);
+  const lines = await deriveLines(value, salt, record.lineCount);
+  const sums = await deriveSums(value, salt, record.sumCount);
+  return { answer: value.toString(16), lines, sums };
 }
 
 async function open({ record, answer }) {
