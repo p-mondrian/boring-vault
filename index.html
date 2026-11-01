@@ -48,18 +48,19 @@
 
       <fieldset>
         <legend>The boring part</legend>
+        <label for="minutes">Minimum wait, even on a fast computer (minutes)</label>
+        <input id="minutes" type="number" inputmode="decimal" min="0.1" max="1440" step="any" value="60" required>
+        <p id="phone-estimate" class="hint" role="status"></p>
         <div class="row">
-          <div class="grow">
-            <label for="minutes">Wait (minutes)</label>
-            <input id="minutes" type="number" inputmode="decimal" min="0.1" max="1440" step="any" value="20" required>
-          </div>
           <div class="grow">
             <label for="line-count">Lines to retype</label>
             <input id="line-count" type="number" inputmode="numeric" min="1" max="500" step="1" value="100" required>
           </div>
+          <div class="grow">
+            <label for="sum-count">Sums to solve</label>
+            <input id="sum-count" type="number" inputmode="numeric" min="0" max="500" step="1" value="30" required>
+          </div>
         </div>
-        <label for="sum-count">Sums to solve in your head</label>
-        <input id="sum-count" type="number" inputmode="numeric" min="0" max="500" step="1" value="30" required>
       </fieldset>
 
       <p class="hint">Before sealing, set each account to the password above and make sure it works. Nothing here can recover a lost vault.</p>
@@ -85,14 +86,15 @@
     <h1>Vault sealed</h1>
     <p id="sealed-message" class="notice" role="status" hidden></p>
     <dl>
-      <div><dt>Forced wait</dt><dd><span id="sealed-minutes"></span> min</dd></div>
+      <div><dt>Wait on this phone</dt><dd id="sealed-phone"></dd></div>
+      <div><dt>Wait on a fast computer</dt><dd id="sealed-fast"></dd></div>
       <div><dt>Lines to retype</dt><dd id="sealed-lines"></dd></div>
       <div><dt>Sums to solve</dt><dd id="sealed-sums"></dd></div>
       <div><dt>Sealed on</dt><dd id="sealed-date"></dd></div>
       <div><dt>Fingerprint</dt><dd id="sealed-fingerprint"></dd></div>
     </dl>
     <button id="start-unlock" type="button">Start unlocking</button>
-    <p class="hint">Before you start, set Auto-Lock to Never if your screen tends to turn off. Leaving the app for more than 30 seconds starts everything over.</p>
+    <p class="hint">Before you start, plug in your phone and set Auto-Lock to Never. Progress is saved as you go, and leaving the app pauses the wait. Leaving for more than 30 seconds during the lines or sums starts those over.</p>
     <div class="tools">
       <button id="copy-backup" type="button" class="secondary">Copy sealed backup</button>
       <button id="show-delete" type="button" class="secondary">Delete vault…</button>
@@ -116,8 +118,8 @@
     <p class="lede">Your phone is working out the key. There is no shortcut.</p>
     <div class="progress"><div id="wait-bar"></div></div>
     <p class="stat"><span id="wait-percent">0%</span> · <span id="wait-remaining">Estimating…</span></p>
-    <p class="hint">Keep this app open and the screen on. Leaving for more than 30 seconds starts over.</p>
-    <button id="cancel-wait" type="button" class="secondary">Give up</button>
+    <p class="hint">The wait only runs while this app is open with the screen on. Leaving pauses it, and progress is saved every 10 seconds.</p>
+    <button id="cancel-wait" type="button" class="secondary">Pause</button>
   </section>
 
   <section id="typing" hidden>

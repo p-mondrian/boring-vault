@@ -1,6 +1,10 @@
 'use strict';
 
 const STORAGE_KEY = 'boring-vault-record';
+const PROGRESS_KEY = 'boring-vault-progress';
+// 2048-bit squarings per second for optimised GMP on an Apple M4 (measured at 1.96 million), plus margin
+// for hand-tuned code. The wait is set against this rate, so a fast computer can't finish under the minimum.
+const FAST_COMPUTER_RATE = 2500000;
 const LEAVE_GRACE_MS = 30 * 1000;
 const REVEAL_MS = 120 * 1000;
 const DEFAULT_SUM_COUNT = 30; // Also applies to vaults sealed before sums existed.
@@ -10,11 +14,13 @@ const PASSWORD_ALPHABET = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ2345678
 const $ = (id) => document.getElementById(id);
 const SCREENS = ['setup', 'sealing', 'sealed', 'waiting', 'typing', 'sums', 'reveal'];
 
-let activeWorker = null;
+let activeJob = null; // { worker, reject }
 let wakeLock = null;
 let hiddenAt = null;
 let revealTimer = null;
-let session = null; // { lines, sums, answer, index, sumIndex } while an unlock is in progress.
+let session = null; // { stage, lines, sums, answer, index, sumIndex } while an unlock is in progress.
+let deviceRate = null; // This device's squarings per second, measured once per launch.
+let measuring = null;
 
 function show(name) {
   for (const screen of SCREENS) $(screen).hidden = screen !== name;
@@ -34,6 +40,29 @@ function saveRecord(record) {
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 }
 
+function loadProgress(record) {
+  try {
+    const progress = JSON.parse(localStorage.getItem(PROGRESS_KEY));
+    if (progress && progress.salt === record.salt && Number.isSafeInteger(progress.done) &&
+      progress.done > 0 && progress.done <= record.squarings && /^[0-9a-f]+$/.test(progress.value)) return progress;
+  } catch {
+    // Treated as no progress.
+  }
+  return null;
+}
+
+function saveProgress(record, done, value) {
+  try {
+    localStorage.setItem(PROGRESS_KEY, JSON.stringify({ salt: record.salt, done, value }));
+  } catch {
+    // Not fatal: the wait just can't resume after the app closes.
+  }
+}
+
+function clearProgress() {
+  localStorage.removeItem(PROGRESS_KEY);
+}
+
 function isValidRecord(record) {
   return Boolean(record) && record.version === 1 &&
     [record.n, record.base, record.salt, record.iv, record.ciphertext].every((v) => typeof v === 'string' && /^[0-9a-f]+$/.test(v)) &&
@@ -41,7 +70,8 @@ function isValidRecord(record) {
     record.ciphertext.length >= 34 && record.ciphertext.length % 2 === 0 &&
     Number.isSafeInteger(record.squarings) && record.squarings > 0 &&
     Number.isInteger(record.lineCount) && record.lineCount > 0 && record.lineCount <= 500 &&
-    (record.sumCount === undefined || (Number.isInteger(record.sumCount) && record.sumCount >= 0 && record.sumCount <= 500));
+    (record.sumCount === undefined || (Number.isInteger(record.sumCount) && record.sumCount >= 0 && record.sumCount <= 500)) &&
+    (record.deviceRate === undefined || (Number.isFinite(record.deviceRate) && record.deviceRate > 0));
 }
 
 // Covers every field that decryption depends on, so one changed character shows up at import.
@@ -55,17 +85,21 @@ function runJob(message, onUpdate) {
   stopWorker();
   return new Promise((resolve, reject) => {
     const worker = new Worker('worker.js');
-    activeWorker = worker;
+    activeJob = { worker, reject };
+    const finish = () => {
+      if (activeJob && activeJob.worker === worker) activeJob = null;
+      worker.terminate();
+    };
     worker.onerror = (event) => {
-      stopWorker();
+      finish();
       reject(new Error(event.message));
     };
     worker.onmessage = ({ data }) => {
       if (data.type === 'done') {
-        stopWorker();
+        finish();
         resolve(data.result);
       } else if (data.type === 'error') {
-        stopWorker();
+        finish();
         reject(new Error(data.message));
       } else if (onUpdate) {
         onUpdate(data);
@@ -75,9 +109,28 @@ function runJob(message, onUpdate) {
   });
 }
 
+// Rejects the stopped job's promise, so nothing waits on a worker that's gone.
 function stopWorker() {
-  if (activeWorker) activeWorker.terminate();
-  activeWorker = null;
+  if (!activeJob) return;
+  activeJob.worker.terminate();
+  activeJob.reject(new Error('Stopped.'));
+  activeJob = null;
+}
+
+function measureDevice() {
+  if (deviceRate) return Promise.resolve(deviceRate);
+  if (!measuring) {
+    measuring = runJob({ job: 'measure' }).then(({ rate }) => {
+      deviceRate = rate;
+      return rate;
+    });
+    measuring.catch(() => { measuring = null; });
+  }
+  return measuring;
+}
+
+function squaringsFor(minutes) {
+  return Math.max(1, Math.ceil(FAST_COMPUTER_RATE * minutes * 60));
 }
 
 async function keepScreenOn() {
@@ -109,8 +162,12 @@ function generatePassword() {
 }
 
 function formatDuration(ms) {
-  const minutes = Math.ceil(ms / 60000);
-  return minutes <= 1 ? 'about a minute' : `about ${minutes} minutes`;
+  if (ms < 60000) return `${Math.max(1, Math.round(ms / 1000))} s`;
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours} h ${rest} min` : `${hours} h`;
 }
 
 // Runs inside the tap itself, which is when iOS allows a copy.
@@ -166,6 +223,19 @@ function showSetup(message) {
   $('setup-error').textContent = message || '';
   $('install-note').hidden = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
   show('setup');
+  updateEstimate();
+  measureDevice().then(updateEstimate, updateEstimate);
+}
+
+function updateEstimate() {
+  const minutes = Number($('minutes').value);
+  if (!deviceRate) {
+    $('phone-estimate').textContent = 'Measuring this phone’s speed…';
+  } else if (!(minutes > 0)) {
+    $('phone-estimate').textContent = '';
+  } else {
+    $('phone-estimate').textContent = `On this phone, the wait will take about ${formatDuration(squaringsFor(minutes) / deviceRate * 1000)}.`;
+  }
 }
 
 async function sealVault(event) {
@@ -181,11 +251,15 @@ async function sealVault(event) {
   const sumCount = Number($('sum-count').value);
   show('sealing');
   try {
-    const record = await runJob({ job: 'seal', secret, minutes, lineCount, sumCount }, (update) => {
+    $('sealing-status').textContent = 'Measuring this phone’s speed…';
+    const rate = await measureDevice();
+    const squarings = squaringsFor(minutes);
+    const record = await runJob({ job: 'seal', secret, squarings, deviceRate: rate, lineCount, sumCount }, (update) => {
       if (update.type === 'status') $('sealing-status').textContent = update.text;
     });
     record.checksum = await recordChecksum(record);
     saveRecord(record);
+    clearProgress();
     $('setup-form').reset();
     showSealed('Sealed. Save a sealed backup now: if iOS clears this app’s data, the backup is the only copy.');
   } catch (error) {
@@ -214,6 +288,7 @@ async function importBackup() {
   }
   const hadChecksum = Boolean(record.checksum);
   saveRecord(record);
+  clearProgress();
   $('backup-input').value = '';
   showSealed(hadChecksum
     ? 'Backup restored and checked: it’s identical to what was sealed.'
@@ -241,7 +316,13 @@ function showSealed(message) {
   letScreenSleep();
   $('sealed-message').textContent = message || '';
   $('sealed-message').hidden = !message;
-  $('sealed-minutes').textContent = String(record.minutes);
+  const phoneMs = record.deviceRate ? record.squarings / record.deviceRate * 1000 : record.minutes * 60000;
+  $('sealed-phone').textContent = `about ${formatDuration(phoneMs)}`;
+  $('sealed-fast').textContent = `at least ${formatDuration(record.squarings / FAST_COMPUTER_RATE * 1000)}`;
+  const progress = loadProgress(record);
+  $('start-unlock').textContent = progress
+    ? `Resume unlocking (${Math.floor(progress.done / record.squarings * 100)}% waited)`
+    : 'Start unlocking';
   $('sealed-lines').textContent = String(record.lineCount);
   $('sealed-sums').textContent = String(record.sumCount);
   $('backup-manual').hidden = true;
@@ -256,37 +337,49 @@ function showSealed(message) {
 function deleteVault() {
   if ($('delete-confirm').value !== 'DELETE') return;
   localStorage.removeItem(STORAGE_KEY);
+  clearProgress();
   showSetup();
 }
 
 // Unlocking
 
+function showWaitProgress(fraction) {
+  $('wait-bar').style.width = `${(fraction * 100).toFixed(1)}%`;
+  $('wait-percent').textContent = `${Math.floor(fraction * 100)}%`;
+}
+
 async function startUnlock() {
   const record = loadRecord();
-  session = { index: 0, sumIndex: 0, lines: null, sums: null, answer: null };
+  const resume = loadProgress(record);
+  const current = { stage: 'wait', index: 0, sumIndex: 0, lines: null, sums: null, answer: null };
+  session = current;
   hiddenAt = null;
-  $('wait-bar').style.width = '0%';
-  $('wait-percent').textContent = '0%';
+  const startDone = resume ? resume.done : 0;
+  showWaitProgress(startDone / record.squarings);
   $('wait-remaining').textContent = 'Estimating…';
   show('waiting');
   keepScreenOn();
   const startedAt = Date.now();
   try {
-    const { answer, lines, sums } = await runJob({ job: 'solve', record }, ({ type, done, total }) => {
+    const { answer, lines, sums } = await runJob({ job: 'solve', record, resume }, ({ type, done, total, value }) => {
       if (type !== 'progress') return;
-      const fraction = done / total;
-      $('wait-bar').style.width = `${(fraction * 100).toFixed(1)}%`;
-      $('wait-percent').textContent = `${Math.floor(fraction * 100)}%`;
-      if (fraction > 0.001) {
-        $('wait-remaining').textContent = `${formatDuration((Date.now() - startedAt) * (1 - fraction) / fraction)} left`;
+      if (value) saveProgress(record, done, value);
+      showWaitProgress(done / total);
+      const elapsed = Date.now() - startedAt;
+      if (elapsed > 3000 && done > startDone) {
+        $('wait-remaining').textContent = `about ${formatDuration((total - done) * elapsed / (done - startDone))} left`;
       }
     });
-    if (!session) return;
-    session.answer = answer;
-    session.lines = lines;
-    session.sums = sums;
+    if (session !== current) return;
+    // Keeps the finished wait if the lines or sums have to start over.
+    saveProgress(record, record.squarings, answer);
+    current.stage = 'type';
+    current.answer = answer;
+    current.lines = lines;
+    current.sums = sums;
     showTyping();
   } catch (error) {
+    if (session !== current) return;
     showSealed(`Unlock failed: ${error.message}`);
   }
 }
@@ -348,13 +441,18 @@ function checkSum() {
 
 async function revealPasswords() {
   const record = loadRecord();
+  const current = session;
   try {
-    const secret = await runJob({ job: 'open', record, answer: session.answer });
+    const secret = await runJob({ job: 'open', record, answer: current.answer });
+    if (session !== current) return;
+    clearProgress();
     session = null;
     hiddenAt = null;
     letScreenSleep();
     renderReveal(secret);
   } catch {
+    if (session !== current) return;
+    clearProgress();
     showSealed('The passwords couldn’t be decrypted, so this vault or backup is damaged.');
   }
 }
@@ -406,8 +504,9 @@ document.addEventListener('visibilitychange', () => {
     if (session) hiddenAt = Date.now();
     return;
   }
-  if (session && hiddenAt && Date.now() - hiddenAt > LEAVE_GRACE_MS) {
-    showSealed('You left the app for too long, so the unlock started over.');
+  // Leaving during the wait only pauses it; leaving during the lines or sums starts those over.
+  if (session && session.stage === 'type' && hiddenAt && Date.now() - hiddenAt > LEAVE_GRACE_MS) {
+    showSealed('You left for more than 30 seconds, so the lines and sums start over. Your finished wait is kept.');
     return;
   }
   hiddenAt = null;
@@ -430,9 +529,10 @@ $('start-unlock').addEventListener('click', startUnlock);
 $('copy-backup').addEventListener('click', copyBackup);
 $('show-delete').addEventListener('click', () => { $('delete-panel').hidden = false; });
 $('delete-button').addEventListener('click', deleteVault);
-$('cancel-wait').addEventListener('click', () => showSealed());
-$('cancel-typing').addEventListener('click', () => showSealed());
-$('cancel-sums').addEventListener('click', () => showSealed());
+$('cancel-wait').addEventListener('click', () => showSealed('Paused. Progress up to the last 10 seconds is saved.'));
+$('cancel-typing').addEventListener('click', () => showSealed('Stopped. Your finished wait is kept.'));
+$('cancel-sums').addEventListener('click', () => showSealed('Stopped. Your finished wait is kept.'));
+$('minutes').addEventListener('input', updateEstimate);
 $('lock-now').addEventListener('click', lockAfterReveal);
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

@@ -7,6 +7,7 @@
 const FORMAT_VERSION = 1;
 const PRIME_BITS = 1024;
 const CALIBRATION_MS = 3000;
+const CHECKPOINT_MS = 10000;
 const WORDS_PER_LINE = 6;
 const TERMS_PER_SUM = 3;
 
@@ -162,17 +163,19 @@ async function deriveSums(answer, salt, sumCount) {
   return sums;
 }
 
-async function seal({ secret, minutes, lineCount, sumCount }) {
+// Speed doesn't depend on n being a real RSA modulus, so a random odd one will do.
+async function measure() {
+  const n = bytesToBig(randomBytes(PRIME_BITS / 4)) | (3n << BigInt(2 * PRIME_BITS - 2)) | 1n;
+  return { rate: measureSquaringRate(n) };
+}
+
+async function seal({ secret, squarings, deviceRate, lineCount, sumCount }) {
   postMessage({ type: 'status', text: 'Generating the puzzle…' });
   const p = randomPrime();
   let q = randomPrime();
   while (q === p) q = randomPrime();
   const n = p * q;
   const phi = (p - 1n) * (q - 1n);
-
-  postMessage({ type: 'status', text: 'Measuring this phone’s speed…' });
-  const rate = measureSquaringRate(n);
-  const squarings = Math.max(1, Math.ceil(rate * minutes * 60));
 
   postMessage({ type: 'status', text: 'Encrypting…' });
   const base = 2n + bytesToBig(randomBytes(PRIME_BITS / 4)) % (n - 2n);
@@ -193,7 +196,7 @@ async function seal({ secret, minutes, lineCount, sumCount }) {
     n: n.toString(16),
     base: base.toString(16),
     squarings,
-    minutes,
+    deviceRate: Math.round(deviceRate),
     lineCount,
     sumCount,
     salt: bytesToHex(salt),
@@ -203,17 +206,22 @@ async function seal({ secret, minutes, lineCount, sumCount }) {
   };
 }
 
-async function solve({ record }) {
+// Saving progress doesn't weaken anything: whoever holds the backup could checkpoint too.
+async function solve({ record, resume }) {
   const n = BigInt('0x' + record.n);
-  let value = BigInt('0x' + record.base);
+  let value = BigInt('0x' + (resume ? resume.value : record.base));
   let lastReport = 0;
-  for (let i = 0; i < record.squarings; i++) {
+  let lastCheckpoint = performance.now();
+  for (let i = resume ? resume.done : 0; i < record.squarings; i++) {
     value = (value * value) % n;
     if ((i & 255) === 0) {
       const now = performance.now();
       if (now - lastReport > 500) {
         lastReport = now;
-        postMessage({ type: 'progress', done: i, total: record.squarings });
+        const checkpoint = now - lastCheckpoint > CHECKPOINT_MS;
+        if (checkpoint) lastCheckpoint = now;
+        // After this pass, i + 1 squarings are done.
+        postMessage({ type: 'progress', done: i + 1, total: record.squarings, value: checkpoint ? value.toString(16) : undefined });
       }
     }
   }
@@ -232,7 +240,7 @@ async function open({ record, answer }) {
   return JSON.parse(new TextDecoder().decode(plaintext));
 }
 
-const JOBS = { seal, solve, open };
+const JOBS = { measure, seal, solve, open };
 
 self.onmessage = async ({ data }) => {
   try {
