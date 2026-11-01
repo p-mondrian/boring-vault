@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#f4f1ea" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1c1b19" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Boring Vault">
+  <title>Boring Vault</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+
+  <section id="setup" hidden>
+    <h1>Boring Vault</h1>
+    <p class="lede">Seal two passwords behind a long, dull process. After sealing, this is the only way to see them again.</p>
+    <p id="install-note" class="notice" hidden>Add this to your Home Screen first: tap Share, then Add to Home Screen, and open it from the icon. Safari and the Home Screen app keep separate data.</p>
+
+    <form id="setup-form" autocomplete="off">
+      <fieldset>
+        <legend>First password</legend>
+        <label for="label-1">Name</label>
+        <input id="label-1" type="text" maxlength="60" placeholder="e.g. Instagram">
+        <label for="password-1">Password</label>
+        <div class="row">
+          <input id="password-1" type="text" required autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off">
+          <button id="generate-1" type="button" class="secondary">Generate</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Second password</legend>
+        <label for="label-2">Name</label>
+        <input id="label-2" type="text" maxlength="60" placeholder="e.g. Screen Time">
+        <label for="password-2">Password</label>
+        <div class="row">
+          <input id="password-2" type="text" required autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off">
+          <button id="generate-2" type="button" class="secondary">Generate</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>The boring part</legend>
+        <div class="row">
+          <div class="grow">
+            <label for="minutes">Wait (minutes)</label>
+            <input id="minutes" type="number" inputmode="decimal" min="0.1" max="1440" step="any" value="20" required>
+          </div>
+          <div class="grow">
+            <label for="line-count">Lines to retype</label>
+            <input id="line-count" type="number" inputmode="numeric" min="1" max="500" step="1" value="100" required>
+          </div>
+        </div>
+      </fieldset>
+
+      <p class="hint">Before sealing, set each account to the password above and make sure it works. Nothing here can recover a lost vault.</p>
+      <p id="setup-error" class="error" role="alert"></p>
+      <button type="submit">Seal the vault</button>
+    </form>
+
+    <details>
+      <summary>Restore a sealed backup</summary>
+      <label for="backup-input">Sealed backup</label>
+      <textarea id="backup-input" rows="5" autocapitalize="none" autocorrect="off" spellcheck="false"></textarea>
+      <button id="import-button" type="button" class="secondary">Restore</button>
+    </details>
+  </section>
+
+  <section id="sealing" hidden>
+    <h1>Sealing…</h1>
+    <p id="sealing-status" class="lede" role="status">Starting…</p>
+    <p class="hint">Keep the app open. This takes a few seconds.</p>
+  </section>
+
+  <section id="sealed" hidden>
+    <h1>Vault sealed</h1>
+    <p id="sealed-message" class="notice" role="status" hidden></p>
+    <dl>
+      <div><dt>Forced wait</dt><dd><span id="sealed-minutes"></span> min</dd></div>
+      <div><dt>Lines to retype</dt><dd id="sealed-lines"></dd></div>
+      <div><dt>Sealed on</dt><dd id="sealed-date"></dd></div>
+    </dl>
+    <button id="start-unlock" type="button">Start unlocking</button>
+    <p class="hint">Before you start, set Auto-Lock to Never if your screen tends to turn off. Leaving the app for more than 30 seconds starts everything over.</p>
+    <div class="tools">
+      <button id="copy-backup" type="button" class="secondary">Copy sealed backup</button>
+      <button id="show-delete" type="button" class="secondary">Delete vault…</button>
+    </div>
+    <p class="hint">The backup is encrypted. Paste it into Notes or Files, and it still needs the full process to open.</p>
+    <div id="delete-panel" hidden>
+      <label for="delete-confirm">This destroys the vault. Type DELETE to confirm.</label>
+      <div class="row">
+        <input id="delete-confirm" type="text" autocapitalize="characters" autocorrect="off" spellcheck="false">
+        <button id="delete-button" type="button" class="danger">Delete</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="waiting" hidden>
+    <h1>Waiting</h1>
+    <p class="lede">Your phone is working out the key. There is no shortcut.</p>
+    <div class="progress"><div id="wait-bar"></div></div>
+    <p class="stat"><span id="wait-percent">0%</span> · <span id="wait-remaining">Estimating…</span></p>
+    <p class="hint">Keep this app open and the screen on. Leaving for more than 30 seconds starts over.</p>
+    <button id="cancel-wait" type="button" class="secondary">Give up</button>
+  </section>
+
+  <section id="typing" hidden>
+    <h1 id="line-counter">Line 1</h1>
+    <div class="progress"><div id="line-bar"></div></div>
+    <p id="line-target" class="target"></p>
+    <label for="line-input">Type the line exactly</label>
+    <input id="line-input" type="text" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" enterkeyhint="next">
+    <p id="line-note" class="error" role="alert"></p>
+    <button id="cancel-typing" type="button" class="secondary">Give up</button>
+  </section>
+
+  <section id="reveal" hidden>
+    <h1>Unlocked</h1>
+    <p id="reveal-countdown" class="lede" role="status"></p>
+    <div id="reveal-list"></div>
+    <button id="lock-now" type="button">Lock now</button>
+    <p class="hint">Copied passwords stay on the clipboard until you copy something else.</p>
+  </section>
+
+</main>
+<script src="app.js"></script>
+</body>
+</html>
