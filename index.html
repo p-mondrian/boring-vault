@@ -89,6 +89,7 @@
       <div><dt>Lines to retype</dt><dd id="sealed-lines"></dd></div>
       <div><dt>Sums to solve</dt><dd id="sealed-sums"></dd></div>
       <div><dt>Sealed on</dt><dd id="sealed-date"></dd></div>
+      <div><dt>Fingerprint</dt><dd id="sealed-fingerprint"></dd></div>
     </dl>
     <button id="start-unlock" type="button">Start unlocking</button>
     <p class="hint">Before you start, set Auto-Lock to Never if your screen tends to turn off. Leaving the app for more than 30 seconds starts everything over.</p>
@@ -96,7 +97,7 @@
       <button id="copy-backup" type="button" class="secondary">Copy sealed backup</button>
       <button id="show-delete" type="button" class="secondary">Delete vault…</button>
     </div>
-    <p class="hint">The backup is encrypted. Paste it into Notes or Files, and it still needs the full process to open.</p>
+    <p class="hint">The backup is encrypted. Paste it into Notes or Files, and it still needs the full process to open. A restored backup shows the same fingerprint as the original.</p>
     <div id="backup-manual" hidden>
       <label for="backup-output">Automatic copy didn’t work. Select all of this and copy it by hand.</label>
       <textarea id="backup-output" rows="6" readonly autocapitalize="none" autocorrect="off" spellcheck="false"></textarea>

@@ -1,6 +1,6 @@
 'use strict';
 
-const CACHE = 'boring-vault-v3';
+const CACHE = 'boring-vault-v4';
 const FILES = ['./', 'index.html', 'app.js', 'worker.js', 'style.css', 'manifest.webmanifest', 'icon-180.png', 'icon-512.png'];
 
 self.addEventListener('install', (event) => {

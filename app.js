@@ -37,9 +37,18 @@ function saveRecord(record) {
 function isValidRecord(record) {
   return Boolean(record) && record.version === 1 &&
     [record.n, record.base, record.salt, record.iv, record.ciphertext].every((v) => typeof v === 'string' && /^[0-9a-f]+$/.test(v)) &&
+    record.n.length === 512 && record.salt.length === 64 && record.iv.length === 24 &&
+    record.ciphertext.length >= 34 && record.ciphertext.length % 2 === 0 &&
     Number.isSafeInteger(record.squarings) && record.squarings > 0 &&
     Number.isInteger(record.lineCount) && record.lineCount > 0 && record.lineCount <= 500 &&
     (record.sumCount === undefined || (Number.isInteger(record.sumCount) && record.sumCount >= 0 && record.sumCount <= 500));
+}
+
+// Covers every field that decryption depends on, so one changed character shows up at import.
+async function recordChecksum(record) {
+  const fields = [record.n, record.base, record.squarings, record.salt, record.iv, record.ciphertext].join('|');
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(fields));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 function runJob(message, onUpdate) {
@@ -175,6 +184,7 @@ async function sealVault(event) {
     const record = await runJob({ job: 'seal', secret, minutes, lineCount, sumCount }, (update) => {
       if (update.type === 'status') $('sealing-status').textContent = update.text;
     });
+    record.checksum = await recordChecksum(record);
     saveRecord(record);
     $('setup-form').reset();
     showSealed('Sealed. Save a sealed backup now: if iOS clears this app’s data, the backup is the only copy.');
@@ -183,19 +193,41 @@ async function sealVault(event) {
   }
 }
 
-function importBackup() {
+// Notes can wrap long text or curl the quotes. A backup has no meaningful whitespace.
+function parseBackup(text) {
   try {
-    const record = JSON.parse($('backup-input').value);
-    if (!isValidRecord(record)) throw new Error('invalid');
-    saveRecord(record);
-    $('backup-input').value = '';
-    showSealed('Backup restored.');
+    return JSON.parse(text.replace(/\s/g, '').replace(/[“”„]/g, '"'));
   } catch {
-    $('setup-error').textContent = 'That doesn’t look like a sealed backup.';
+    return null;
   }
 }
 
+async function importBackup() {
+  const record = parseBackup($('backup-input').value);
+  if (!isValidRecord(record)) {
+    $('setup-error').textContent = 'That isn’t a complete sealed backup. Nothing was restored.';
+    return;
+  }
+  if (record.checksum && record.checksum !== await recordChecksum(record)) {
+    $('setup-error').textContent = 'This backup has been changed or damaged, so it couldn’t open. Nothing was restored.';
+    return;
+  }
+  const hadChecksum = Boolean(record.checksum);
+  saveRecord(record);
+  $('backup-input').value = '';
+  showSealed(hadChecksum
+    ? 'Backup restored and checked: it’s identical to what was sealed.'
+    : 'Backup restored. It’s from an older version with no checksum, so compare the fingerprint below with the original vault’s.');
+}
+
 // Sealed
+
+async function showFingerprint(record) {
+  const checksum = await recordChecksum(record);
+  $('sealed-fingerprint').textContent = `${checksum.slice(0, 4)} ${checksum.slice(4, 8)}`;
+  // Vaults sealed before checksums existed get one, so their future backups can be checked.
+  if (!record.checksum) saveRecord({ ...record, checksum });
+}
 
 function showSealed(message) {
   const record = loadRecord();
@@ -217,6 +249,7 @@ function showSealed(message) {
   $('sealed-date').textContent = new Date(record.createdAt).toLocaleDateString();
   $('delete-panel').hidden = true;
   $('delete-confirm').value = '';
+  showFingerprint(record);
   show('sealed');
 }
 
@@ -270,6 +303,7 @@ function showTyping() {
 }
 
 function checkLine() {
+  if (!session || session.index >= session.lines.length) return; // Already decrypting.
   const input = $('line-input');
   const target = session.lines[session.index];
   if (input.value === target) {
@@ -297,6 +331,7 @@ function showSum() {
 }
 
 function checkSum() {
+  if (!session || session.sumIndex >= session.sums.length) return; // Already decrypting.
   const input = $('sum-input');
   const expected = String(session.sums[session.sumIndex].reduce((total, term) => total + term, 0));
   if (input.value.length < expected.length) {
@@ -319,8 +354,8 @@ async function revealPasswords() {
     hiddenAt = null;
     letScreenSleep();
     renderReveal(secret);
-  } catch (error) {
-    showSealed(`Decryption failed: ${error.message}`);
+  } catch {
+    showSealed('The passwords couldn’t be decrypted, so this vault or backup is damaged.');
   }
 }
 

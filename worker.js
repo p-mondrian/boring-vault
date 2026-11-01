@@ -180,11 +180,13 @@ async function seal({ secret, minutes, lineCount, sumCount }) {
 
   const salt = randomBytes(32);
   const iv = randomBytes(12);
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
-    await deriveAesKey(answer, salt),
-    encoder.encode(JSON.stringify(secret)),
-  );
+  const key = await deriveAesKey(answer, salt);
+  const plaintext = JSON.stringify(secret);
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoder.encode(plaintext));
+
+  // The last chance to catch a problem while the original passwords are still here.
+  const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+  if (new TextDecoder().decode(decrypted) !== plaintext) throw new Error('The sealed copy did not match.');
 
   return {
     version: FORMAT_VERSION,
